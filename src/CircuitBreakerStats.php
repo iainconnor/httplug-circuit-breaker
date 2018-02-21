@@ -76,7 +76,7 @@ class CircuitBreakerStats
     /**
      * @return int
      */
-    public function getAttemptedRequests(): int
+    public function getRequestsSentToService(): int
     {
         return $this->successes + $this->failures;
     }
@@ -84,9 +84,33 @@ class CircuitBreakerStats
     /**
      * @return int
      */
+    public function getTotalAttemptedRequests(): int
+    {
+        return $this->getRequestsSentToService() + $this->rejections;
+    }
+
+    /**
+     * @return int
+     */
+    public function getAllowedRatio(): int
+    {
+        $this->getTotalAttemptedRequests() == 0 ? ($this->rejections == 0 ? 100 : 10) : round(($this->getRequestsSentToService() / $this->getTotalAttemptedRequests()) * 100);
+    }
+
+    /**
+     * @return int
+     */
+    public function getRejectionRatio(): int
+    {
+        return 100 - $this->getAllowedRatio();
+    }
+
+    /**
+     * @return int
+     */
     public function getSuccessRatio(): int
     {
-        return round(($this->successes / $this->getAttemptedRequests()) * 100);
+        return $this->getRequestsSentToService() == 0 ? ($this->rejections == 0 ? 100 : 0) : round(($this->successes / $this->getRequestsSentToService()) * 100);
     }
 
     /**
@@ -100,9 +124,9 @@ class CircuitBreakerStats
     public function __toString(): string
     {
         return
-            'successes ' . $this->successes . ', ' .
-            'failures ' . $this->failures . ', ' .
-            'rejections ' . $this->rejections;
+            $this->successes . ' successes, ' .
+            $this->failures . ' failures (' . $this->getSuccessRatio() . '% sucessful responses from service) ' .
+            'and ' . $this->rejections . ' rejections (' . $this->getAllowedRatio() . '% allowed to hit service).';
     }
 
     public function toArray(): array
@@ -110,7 +134,9 @@ class CircuitBreakerStats
         return [
             'successes' => $this->successes,
             'failures' => $this->failures,
-            'rejections' => $this->rejections
+            'success_ratio' => $this->getSuccessRatio() . '%',
+            'rejections' => $this->rejections,
+            'allowed_ratio' => $this->getAllowedRatio() . '%'
         ];
     }
 }

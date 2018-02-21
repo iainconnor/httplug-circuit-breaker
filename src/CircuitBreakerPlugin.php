@@ -135,7 +135,10 @@ class CircuitBreakerPlugin implements Plugin
     {
         $stats = $this->getStats($serviceIdentifier);
 
-        if ($stats->getAttemptedRequests() >= $this->minRequests && $stats->getFailureRatio() >= $this->failureThreshold) {
+        $hasEnoughRequests = $stats->getRequestsSentToService() >= $this->minRequests;
+        $hasEnoughFailures = $stats->getFailureRatio() >= $this->failureThreshold;
+
+        if ($hasEnoughRequests && $hasEnoughFailures) {
             return CircuitBreakerPlugin::STATUS_OPEN;
         }
 
@@ -144,7 +147,13 @@ class CircuitBreakerPlugin implements Plugin
 
     public function getStats(string $serviceIdentifier): CircuitBreakerStats
     {
-        // @TODO
+        $item = $this->cache->getItem($this->getCacheKey($serviceIdentifier));
+
+        if ($item->isHit()) {
+            return $item->get();
+        }
+
+        return new CircuitBreakerStats();
     }
 
     /**
@@ -382,6 +391,13 @@ class CircuitBreakerPlugin implements Plugin
         $this->increment($event, $key, $val * -1);
     }
 
+    /**
+     * Handle the transition from one status to another, calling any interested listeners.
+     *
+     * @param string $serviceIdentifier
+     * @param string $previousStatus
+     * @param string $newStatus
+     */
     private function handleTransition(string $serviceIdentifier, string $previousStatus, string $newStatus): void
     {
         if ($previousStatus !== $newStatus) {
