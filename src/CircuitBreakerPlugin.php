@@ -133,7 +133,13 @@ class CircuitBreakerPlugin implements Plugin
 
     public function getStatus(string $serviceIdentifier): string
     {
-        // @TODO
+        $stats = $this->getStats($serviceIdentifier);
+
+        if ($stats->getAttemptedRequests() >= $this->minRequests && $stats->getFailureRatio() >= $this->failureThreshold) {
+            return CircuitBreakerPlugin::STATUS_OPEN;
+        }
+
+        return CircuitBreakerPlugin::STATUS_CLOSED;
     }
 
     public function getStats(string $serviceIdentifier): CircuitBreakerStats
@@ -148,9 +154,7 @@ class CircuitBreakerPlugin implements Plugin
      */
     public function reset(string $serviceIdentifier): void
     {
-        $this->cache->deleteItem($this->getCacheKey(CircuitBreakerPlugin::EVENT_REQUEST_FAILURE, $serviceIdentifier));
-        $this->cache->deleteItem($this->getCacheKey(CircuitBreakerPlugin::EVENT_REQUEST_REJECTION, $serviceIdentifier));
-        $this->cache->deleteItem($this->getCacheKey(CircuitBreakerPlugin::EVENT_REQUEST_SUCCESS, $serviceIdentifier));
+        $this->cache->deleteItem($this->getCacheKey($serviceIdentifier));
     }
 
     /**
@@ -308,55 +312,74 @@ class CircuitBreakerPlugin implements Plugin
      */
     protected function recordEvent(string $event, string $serviceIdentifier): string
     {
-        $this->increment($this->getCacheKey($event, $serviceIdentifier));
+        $this->increment($event, $this->getCacheKey($serviceIdentifier));
 
         return $this->getStatus($serviceIdentifier);
     }
 
     /**
-     * Retrieve the cache key for the given event type in the given service.
+     * Retrieve the cache key for the stats of the given service.
      *
-     * @param string $event
      * @param string $serviceIdentifier
      *
      * @return string
      */
-    private function getCacheKey(string $event, string $serviceIdentifier): string
+    private function getCacheKey(string $serviceIdentifier): string
     {
-        return CircuitBreakerPlugin::class . '/' . $serviceIdentifier . '/' . $event;
+        return trim(CircuitBreakerPlugin::class, '/') . '/' . $serviceIdentifier;
     }
 
     /**
-     * Increment the value in the cache at `key` by `val`.
+     * Increment the value for `event` in the cache at `key` by `val`.
      *
-     * @param     $key
-     * @param int $val
+     * @param string $event
+     * @param string $key
+     * @param int    $val
      */
-    private function increment($key, $val = 1): void
+    private function increment(string $event, string $key, int $val = 1): void
     {
         $item = $this->cache->getItem($key);
 
         if ($item->isHit()) {
-            $val = $item->get() + $val;
+            /** @var CircuitBreakerStats $stats */
+            $stats = $item->get();
+            switch ($event) {
+                case CircuitBreakerPlugin::EVENT_REQUEST_SUCCESS:
+                    $stats->setSuccesses(max(0, $stats->getSuccesses() + $val));
+                    break;
+                case CircuitBreakerPlugin::EVENT_REQUEST_FAILURE:
+                    $stats->setFailures(max(0, $stats->getFailures() + $val));
+                    break;
+                case CircuitBreakerPlugin::EVENT_REQUEST_REJECTION:
+                    $stats->setRejections(max(0, $stats->getRejections() + $val));
+                    break;
+            }
+            $item->set($stats);
         } else {
-            $item->expiresAfter($this->considerationDuration);
+            $item->set(
+                new CircuitBreakerStats(
+                    $event === CircuitBreakerPlugin::EVENT_REQUEST_SUCCESS ? max(0, $val) : 0,
+                    $event === CircuitBreakerPlugin::EVENT_REQUEST_FAILURE ? max(0, $val) : 0,
+                    $event === CircuitBreakerPlugin::EVENT_REQUEST_REJECTION ? max(0, $val) : 0
+                )
+            );
         }
 
-        $item->set(max(0, $val));
-
+        $item->expiresAfter($this->considerationDuration);
         $this->cache->save($item);
     }
 
     /**
-     * Decrement the value in the cache at `key` by `val`.
+     * Decrement the value for `event` in the cache at `key` by `val`.
      * Value in cache will not be allowed to go below 0.
      *
-     * @param     $key
-     * @param int $val
+     * @param string $event
+     * @param string $key
+     * @param int    $val
      */
-    private function decrement($key, $val = 1): void
+    private function decrement(string $event, string $key, int $val = 1): void
     {
-        $this->increment($key, $val * -1);
+        $this->increment($event, $key, $val * -1);
     }
 
     private function handleTransition(string $serviceIdentifier, string $previousStatus, string $newStatus): void
