@@ -7,7 +7,7 @@ namespace IainConnor\CircuitBreaker\FailureIdentifier;
 use Http\Client\Exception\TransferException;
 use Psr\Http\Message\ResponseInterface;
 
-class StandardFailureIdentifier implements FailureIdentifier
+class StandardResponseFailureIdentifier implements ResponseFailureIdentifier
 {
     /**
      * @inheritDoc

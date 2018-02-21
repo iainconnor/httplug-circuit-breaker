@@ -3,7 +3,7 @@
 namespace IainConnor\CircuitBreaker;
 
 use Http\Client\Common\Plugin;
-use IainConnor\CircuitBreaker\FailureIdentifier\FailureIdentifier;
+use IainConnor\CircuitBreaker\FailureIdentifier\ResponseFailureIdentifier;
 use IainConnor\CircuitBreaker\Identifier\ServiceIdentifier;
 use IainConnor\CircuitBreaker\Listener\CircuitBreakerListener;
 use Psr\Cache\CacheItemPoolInterface;
@@ -19,42 +19,67 @@ class CircuitBreakerPlugin implements Plugin
     const STATUS_CLOSING = 'CLOSING';
     const STATUS_OPEN = 'OPEN';
 
-    /** @var CacheItemPoolInterface */
+    /** @var CacheItemPoolInterface Metrics are stored in this cache. */
     private $cache;
 
-    /** @var CircuitBreakerListener[] */
+    /** @var CircuitBreakerListener[] A set of listeners that receive notifications when circuits change status. */
     private $listeners;
 
-    /** @var FailureIdentifier */
-    private $failureIdentifier;
+    /** @var ResponseFailureIdentifier A Class that identifies Responses and Exceptions that represent failures in calling a service. */
+    private $responseFailureIdentifier;
 
-    /** @var ServiceIdentifier */
+    /** @var ServiceIdentifier A Class that generates identifiers for the service behind a Request. */
     private $serviceIdentifier;
 
-    /** @var bool */
+    /** @var bool Whether this breaker is enabled or not. A disabled breaker will still log theoretical actions, but will never actually reject a request. */
     private $enabled;
+
+    /** @var int Failure rate threshold, as a percentage. */
+    private $failureThreshold;
+
+    /** @var int Minimum number of requests before any change can be considered. */
+    private $minRequests;
+
+    /** @var \DateInterval The duration a series of requests should be considered for. */
+    private $considerationDuration;
 
     /**
      * CircuitBreakerPlugin constructor.
      *
-     * @param CacheItemPoolInterface   $cache
-     * @param FailureIdentifier        $failureIdentifier
-     * @param ServiceIdentifier        $serviceIdentifier
-     * @param bool                     $enabled
-     * @param CircuitBreakerListener[] $listeners
+     * @param CacheItemPoolInterface    $cache                     Metrics are stored in this cache.
+     * @param ResponseFailureIdentifier $responseFailureIdentifier A Class that identifies Responses and Exceptions
+     *                                                             that represent failures in calling a service.
+     * @param ServiceIdentifier         $serviceIdentifier         A Class that generates identifiers for the service
+     *                                                             behind a Request.
+     * @param int                       $failureThreshold          Failure rate threshold, as a percentage.
+     * @param int                       $minRequests               Minimum number of requests before any change can be
+     *                                                             considered.
+     * @param \DateInterval|null        $considerationDuration     The duration a series of requests should be
+     *                                                             considered for.
+     * @param bool                      $enabled                   Whether this breaker is enabled or not. A disabled
+     *                                                             breaker will still log theoretical actions, but will
+     *                                                             never actually reject a request.
+     * @param CircuitBreakerListener[]  $listeners                 A set of listeners that receive notifications when
+     *                                                             circuits change status.
      */
     public function __construct(
         CacheItemPoolInterface $cache,
-        FailureIdentifier $failureIdentifier,
+        ResponseFailureIdentifier $responseFailureIdentifier,
         ServiceIdentifier $serviceIdentifier,
+        int $failureThreshold = 50,
+        int $minRequests = 3,
+        ?\DateInterval $considerationDuration = null,
         bool $enabled = true,
         array $listeners = []
     ) {
-        $this->cache             = $cache;
-        $this->failureIdentifier = $failureIdentifier;
-        $this->serviceIdentifier = $serviceIdentifier;
-        $this->enabled           = $enabled;
-        $this->listeners         = $listeners;
+        $this->cache                     = $cache;
+        $this->responseFailureIdentifier = $responseFailureIdentifier;
+        $this->serviceIdentifier         = $serviceIdentifier;
+        $this->failureThreshold          = $failureThreshold;
+        $this->minRequests               = $minRequests;
+        $this->considerationDuration     = $considerationDuration ?: new \DateInterval('PT15M');
+        $this->enabled                   = $enabled;
+        $this->listeners                 = $listeners;
     }
 
     /**
@@ -84,7 +109,7 @@ class CircuitBreakerPlugin implements Plugin
         }
 
         return $next($request)->then(function (ResponseInterface $response) use ($serviceIdentifier, $status) {
-            $event = $this->failureIdentifier->isResponseFailure($response, $serviceIdentifier) ?
+            $event = $this->responseFailureIdentifier->isResponseFailure($response, $serviceIdentifier) ?
                 CircuitBreakerPlugin::EVENT_REQUEST_FAILURE :
                 CircuitBreakerPlugin::EVENT_REQUEST_SUCCESS;
 
@@ -96,7 +121,7 @@ class CircuitBreakerPlugin implements Plugin
 
             return $response;
         }, function (\Throwable $throwable) use ($serviceIdentifier, $status) {
-            if ($this->failureIdentifier->isExceptionFailure($throwable, $serviceIdentifier)) {
+            if ($this->responseFailureIdentifier->isExceptionFailure($throwable, $serviceIdentifier)) {
                 $this->handleTransition(
                     $serviceIdentifier,
                     $status,
@@ -114,6 +139,42 @@ class CircuitBreakerPlugin implements Plugin
     public function getStats(string $serviceIdentifier): CircuitBreakerStats
     {
         // @TODO
+    }
+
+    /**
+     * Resets all metrics stored for the given service.
+     *
+     * @param string $serviceIdentifier
+     */
+    public function reset(string $serviceIdentifier): void
+    {
+        $this->cache->deleteItem($this->getCacheKey(CircuitBreakerPlugin::EVENT_REQUEST_FAILURE, $serviceIdentifier));
+        $this->cache->deleteItem($this->getCacheKey(CircuitBreakerPlugin::EVENT_REQUEST_REJECTION, $serviceIdentifier));
+        $this->cache->deleteItem($this->getCacheKey(CircuitBreakerPlugin::EVENT_REQUEST_SUCCESS, $serviceIdentifier));
+    }
+
+    /**
+     * @param int $failureThreshold Failure rate threshold, as a percentage.
+     */
+    public function setFailureThreshold(int $failureThreshold)
+    {
+        $this->failureThreshold = $failureThreshold;
+    }
+
+    /**
+     * @param int $minRequests Minimum number of requests before any change can be considered.
+     */
+    public function setMinRequests(int $minRequests)
+    {
+        $this->minRequests = $minRequests;
+    }
+
+    /**
+     * @param \DateInterval $considerationDuration The duration a series of requests should be considered for.
+     */
+    public function setConsiderationDuration(\DateInterval $considerationDuration)
+    {
+        $this->considerationDuration = $considerationDuration;
     }
 
     /**
@@ -277,6 +338,8 @@ class CircuitBreakerPlugin implements Plugin
 
         if ($item->isHit()) {
             $val = $item->get() + $val;
+        } else {
+            $item->expiresAfter($this->considerationDuration);
         }
 
         $item->set(max(0, $val));

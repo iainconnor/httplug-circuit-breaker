@@ -6,7 +6,7 @@ namespace IainConnor\CircuitBreaker\FailureIdentifier;
 
 use Psr\Http\Message\ResponseInterface;
 
-interface FailureIdentifier
+interface ResponseFailureIdentifier
 {
     /**
      * Return whether the given response is considered a failure for the given service.
