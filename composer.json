@@ -1,0 +1,33 @@
+{
+  "name": "iainconnor/httplug-circut-breaker",
+  "description": "Break your dependencies before they break you.",
+  "type": "library",
+  "require": {
+    "psr/log": "^1.0",
+    "psr/http-message": "^1.0",
+    "php-http/client-common": "^1.0",
+    "php": "^7.0",
+    "psr/cache": "^1.0"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^7.0"
+  },
+  "autoload": {
+    "psr-4": {
+      "IainConnor\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "IainConnor\\Tests\\": "tests/"
+    }
+  },
+  "license": "MIT",
+  "authors": [
+    {
+      "name": "Iain Connor",
+      "email": "iainconnor@gmail.com"
+    }
+  ],
+  "minimum-stability": "dev"
+}
